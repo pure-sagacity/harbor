@@ -1,0 +1,20 @@
+kind: pipeline
+name: rust-nix-ci
+
+steps:
+  - name: build-and-test
+    image: nixos/nix:latest
+    commands:
+      - mkdir -p ~/.config/nix
+      - echo "experimental-features = nix-command flakes" >> ~/.config/nix/nix.conf
+
+      - nix build .
+
+      - nix develop --no-pure-eval . -c cargo test
+
+trigger:
+  branch:
+    - main
+  event:
+    - push
+    - pull_request
