@@ -9,6 +9,7 @@
     prettier
     nixfmt
     clippy
+    sqlite
   ];
 
   languages.rust = {
@@ -22,6 +23,8 @@
       "rust-analyzer"
     ];
   };
+
+  dotenv.enable = true;
 
   enterTest = ''
     cargo test

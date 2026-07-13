@@ -1,11 +1,14 @@
 use chacha20poly1305::{
-    ChaCha20Poly1305, Key, Nonce,
+    ChaCha20Poly1305,
     aead::{Aead, Generate, KeyInit},
 };
 
 type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
 
-mod helper {
+pub type Key = chacha20poly1305::Key;
+pub type Nonce = chacha20poly1305::Nonce;
+
+pub mod helper {
     use super::{Generate, Key, Nonce};
     pub fn gen_nonce() -> Nonce {
         Nonce::generate()
