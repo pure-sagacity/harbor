@@ -23,6 +23,10 @@
     ];
   };
 
+  enterTest = ''
+    cargo test
+  '';
+
   git-hooks.hooks = {
     shellcheck.enable = true;
     prettier.enable = true;
