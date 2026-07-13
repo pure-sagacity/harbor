@@ -1,5 +1,5 @@
 {
-  description = "an opensource secrets management and distribution platform.";
+  description = "an open source secrets management and distribution platform.";
 
   inputs = {
     nixpkgs.url = "github:nixos/nixpkgs?ref=nixos-unstable";
@@ -55,7 +55,23 @@
           default = naerskLib.buildPackage {
             name = "harbor";
             version = "0.1.0";
-            src = ./crates/cli;
+            src = ./.;
+
+            cargoBuildOptions =
+              x:
+              x
+              ++ [
+                "-p"
+                "cli"
+              ];
+
+            # Cargo automatically forwards any env var starting with CARGO_ENV_ to your build script
+            CARGO_ENV_GIT_VERSION = if (inputs.self ? shortRev) then inputs.self.shortRev else "dirty";
+
+            nativeBuildInputs = with pkgs; [
+              sqlite
+              git
+            ];
           };
         }
       );

@@ -4,9 +4,8 @@ use clap::Parser;
 use clap::crate_version;
 use cli::Cli;
 use colored::*;
-use git_version::git_version;
 
-const GIT_VERSION: &str = git_version!();
+const GIT_VERSION: &str = env!("GIT_VERSION");
 
 fn main() {
     let cli = Cli::parse();
