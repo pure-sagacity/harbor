@@ -1,5 +1,5 @@
 {
-  description = "Rust Starter Flake";
+  description = "an opensource secrets management and distribution platform.";
 
   inputs = {
     nixpkgs.url = "github:nixos/nixpkgs?ref=nixos-unstable";
@@ -19,7 +19,6 @@
 
   outputs =
     {
-      self,
       nixpkgs,
       devenv,
       naersk,
@@ -54,8 +53,9 @@
         in
         {
           default = naerskLib.buildPackage {
+            name = "harbor";
             version = "0.1.0";
-            src = ./.;
+            src = ./crates/cli;
           };
         }
       );

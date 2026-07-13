@@ -1,0 +1,10 @@
+[package]
+name = "cli"
+version = "1.0.0"
+edition = "2024"
+authors = ["Maaz Khokhar "]
+description = "An opensource secrets management and distribution platform"
+license = "GLP-3.0"
+
+[dependencies]
+tokio = { version = "1.52.3", features = ["full"] }

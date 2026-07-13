@@ -4,7 +4,12 @@
 }:
 
 {
-  packages = with pkgs; [ git ];
+  packages = with pkgs; [
+    cargo-watch
+    prettier
+    nixfmt
+    clippy
+  ];
 
   languages.rust = {
     enable = true;
