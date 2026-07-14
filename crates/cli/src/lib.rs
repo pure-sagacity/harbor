@@ -1,5 +1,6 @@
 use base64::{Engine, engine::general_purpose::STANDARD};
 use clap::{Parser, Subcommand};
+use colored::Colorize;
 use crypto::helper::gen_key;
 use keyring::Entry;
 use std::error::Error;
@@ -77,17 +78,22 @@ pub mod interactions {
         )))
     }
 
-    pub fn create_project(proj_name: &str) -> Result<(), Box<dyn Error>> {
+    pub fn project_exists(proj_name: &str) -> Result<bool, Box<dyn Error>> {
         let mut conn = establish_connection();
 
-        // 1. Check if the project already exists
         let existing_project = projects
             .filter(project_name.eq(proj_name))
             .select(Project::as_select())
             .first::<Project>(&mut conn)
             .optional()?;
 
-        if let Some(_) = existing_project {
+        Ok(existing_project.is_some())
+    }
+
+    pub fn create_project(proj_name: &str) -> Result<(), Box<dyn Error>> {
+        let mut conn = establish_connection();
+
+        if project_exists(proj_name)? {
             return construct_error("Project already exists");
         }
 
@@ -107,6 +113,18 @@ pub mod interactions {
             }
             Err(err) => Err(Box::new(err)),
         }
+    }
+
+    pub fn delete_project(proj_name: &str) -> Result<(), Box<dyn Error>> {
+        let mut conn = establish_connection();
+
+        if !project_exists(proj_name)? {
+            return construct_error("Project does not exist");
+        }
+
+        diesel::delete(projects.filter(project_name.eq(proj_name))).execute(&mut conn)?;
+
+        Ok(())
     }
 }
 
@@ -135,7 +153,7 @@ pub fn gen_or_get_key() -> Result<crypto::Key, Box<dyn Error>> {
     }
 }
 
-pub fn get_input(message: &str, prompt: char, new_line: bool) -> Result<String, Box<dyn Error>> {
+pub fn get_input(message: impl std::fmt::Display, prompt: char, new_line: bool) -> Result<String, Box<dyn Error>> {
     let mut input = String::new();
 
     if new_line {
