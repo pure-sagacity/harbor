@@ -1,15 +1,8 @@
 use cli::Environment;
 use cli::config::Config;
 use cli::interactions::{
-    create_project,
-    delete_project,
-    delete_secret,
-    get_project_id,
-    get_project_secrets,
-    get_projects,
-    project_exists,
-    secret_exists,
-    set_secret,
+    create_project, delete_project, delete_secret, get_project_id, get_project_secrets,
+    get_projects, project_exists, secret_exists, set_secret,
 };
 use cli::{format_doppler_set_command, parse_secret_pairs};
 use diesel::connection::SimpleConnection;
@@ -70,7 +63,10 @@ fn environment_parsing_and_display() {
     assert_eq!(format!("{}", Environment::Prod), "prod");
 
     let err = "unknown".parse::<Environment>().unwrap_err();
-    assert_eq!(err.to_string(), "Environment must be one of: dev, prod, staging");
+    assert_eq!(
+        err.to_string(),
+        "Environment must be one of: dev, prod, staging"
+    );
 }
 
 #[test]
@@ -108,10 +104,7 @@ fn format_doppler_set_command_outputs_expected_format() {
         ("B".to_string(), "2".to_string()),
     ]);
 
-    assert_eq!(
-        many,
-        "doppler secrets set \\\n  A=\"1\" \\\n  B=\"2\""
-    );
+    assert_eq!(many, "doppler secrets set \\\n  A=\"1\" \\\n  B=\"2\"");
 }
 
 #[test]
@@ -158,7 +151,7 @@ fn project_and_secret_lifecycle() {
     assert_eq!(projects.len(), 1);
     assert_eq!(projects[0].name, "alpha");
 
-    assert!(!secret_exists().expect("secret exists"));
+    assert!(!secret_exists(&project_id, "API_KEY", Environment::Dev).expect("secret exists"));
 
     let nonce = crypto::helper::gen_nonce();
     set_secret(
@@ -170,7 +163,7 @@ fn project_and_secret_lifecycle() {
     )
     .expect("set secret");
 
-    assert!(secret_exists().expect("secret exists"));
+    assert!(secret_exists(&project_id, "API_KEY", Environment::Dev).expect("secret exists"));
 
     let secrets = get_project_secrets(&project_id, Environment::Dev).expect("get secrets");
     assert_eq!(secrets.len(), 1);
@@ -191,8 +184,8 @@ fn project_and_secret_lifecycle() {
     assert_eq!(updated.len(), 1);
     assert_eq!(updated[0].1, b"second".to_vec());
 
-    delete_secret("API_KEY").expect("delete secret");
-    assert!(!secret_exists().expect("secret exists"));
+    delete_secret(&project_id, "API_KEY", Environment::Dev).expect("delete secret");
+    assert!(!secret_exists(&project_id, "API_KEY", Environment::Dev).expect("secret exists"));
 
     delete_project("alpha").expect("delete project");
     assert!(!project_exists("alpha").expect("project exists"));
@@ -211,7 +204,8 @@ fn errors_for_missing_project_or_secret() {
     let err = get_project_id("missing").unwrap_err();
     assert_eq!(err.to_string(), "Project not found");
 
-    let err = delete_secret("missing").unwrap_err();
+    let missing_project_id = Uuid::new_v4().to_string();
+    let err = delete_secret(&missing_project_id, "missing", Environment::Dev).unwrap_err();
     assert_eq!(err.to_string(), "Secret does not exist");
 
     cleanup_test_db(db_path);

@@ -125,8 +125,17 @@ pub enum Commands {
         vars: Vec<String>,
     },
     Delete {
+        #[arg(short = 'e', long = "environment")]
+        environment: Option<String>,
+
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         keys: Vec<String>,
+    },
+    Show {
+        #[arg(short = 'e', long = "environment")]
+        environment: Option<String>,
+
+        key: String,
     },
     Setup {},
     List {},
@@ -212,6 +221,10 @@ pub mod interactions {
 
     type Result<T> = std::result::Result<T, Box<dyn Error>>;
 
+    fn db_url() -> String {
+        std::env::var("DATABASE_URL").unwrap_or_else(|_| DB_URL.to_string())
+    }
+
     fn construct_error(message: &str) -> Result<()> {
         Err(Box::new(std::io::Error::new(
             std::io::ErrorKind::AlreadyExists,
@@ -221,7 +234,7 @@ pub mod interactions {
 
     pub fn project_exists(proj_name: &str) -> Result<bool> {
         use super::db::schema::projects::dsl::{name, projects};
-        let mut conn = establish_connection(DB_URL.to_string());
+        let mut conn = establish_connection(db_url());
 
         let existing_project = projects
             .filter(name.eq(proj_name))
@@ -234,7 +247,7 @@ pub mod interactions {
 
     pub fn create_project(proj_name: &str) -> Result<()> {
         use super::db::schema::projects::dsl::{created_at, id, name, projects};
-        let mut conn = establish_connection(DB_URL.to_string());
+        let mut conn = establish_connection(db_url());
 
         if project_exists(proj_name)? {
             return construct_error("Project already exists");
@@ -260,7 +273,7 @@ pub mod interactions {
 
     pub fn delete_project(proj_name: &str) -> Result<()> {
         use super::db::schema::projects::dsl::{name, projects};
-        let mut conn = establish_connection(DB_URL.to_string());
+        let mut conn = establish_connection(db_url());
 
         if !project_exists(proj_name)? {
             return construct_error("Project does not exist");
@@ -273,7 +286,7 @@ pub mod interactions {
 
     pub fn get_projects() -> Result<Vec<Project>> {
         use super::db::schema::projects::dsl::projects;
-        let mut conn = establish_connection(DB_URL.to_string());
+        let mut conn = establish_connection(db_url());
 
         let results = projects
             .select(Project::as_select())
@@ -288,7 +301,7 @@ pub mod interactions {
         environment: Environment,
     ) -> Result<bool> {
         use super::db::schema::secrets::dsl::{config, id, name, project_id, secrets};
-        let mut conn = establish_connection(DB_URL.to_string());
+        let mut conn = establish_connection(db_url());
 
         let existing_secret = secrets
             .filter(project_id.eq(proj_id))
@@ -303,7 +316,7 @@ pub mod interactions {
 
     pub fn get_project_id(proj_name: &str) -> Result<String> {
         use super::db::schema::projects::dsl::{id, name, projects};
-        let mut conn = establish_connection(DB_URL.to_string());
+        let mut conn = establish_connection(db_url());
 
         let project_id = projects
             .filter(name.eq(proj_name))
@@ -330,26 +343,30 @@ pub mod interactions {
         use super::db::schema::secrets::dsl::{
             config, created_at, id, name, nonce, project_id, secret, secrets,
         };
-        let mut conn = establish_connection(DB_URL.to_string());
+        let mut conn = establish_connection(db_url());
 
         if secret_exists(proj_id, secret_name, conf)? {
-            return Err(Box::new(std::io::Error::new(
-                std::io::ErrorKind::AlreadyExists,
-                "Secret already exists",
-            )));
-        }
-
-        insert_into(secrets)
-            .values((
-                id.eq(Uuid::new_v4().to_string()),
-                name.eq(secret_name),
-                secret.eq(secret_value),
-                project_id.eq(proj_id),
-                config.eq(conf),
-                nonce.eq(non.to_vec()),
-                created_at.eq(chrono::Utc::now().naive_utc()),
-            ))
+            update(
+                secrets
+                    .filter(project_id.eq(proj_id))
+                    .filter(name.eq(secret_name))
+                    .filter(config.eq(conf)),
+            )
+            .set((secret.eq(secret_value), nonce.eq(non.to_vec())))
             .execute(&mut conn)?;
+        } else {
+            insert_into(secrets)
+                .values((
+                    id.eq(Uuid::new_v4().to_string()),
+                    name.eq(secret_name),
+                    secret.eq(secret_value),
+                    project_id.eq(proj_id),
+                    config.eq(conf),
+                    nonce.eq(non.to_vec()),
+                    created_at.eq(chrono::Utc::now().naive_utc()),
+                ))
+                .execute(&mut conn)?;
+        }
 
         Ok(())
     }
@@ -359,7 +376,7 @@ pub mod interactions {
         environment: Environment,
     ) -> Result<Vec<(String, Vec<u8>, Vec<u8>)>> {
         use super::db::schema::secrets::dsl::{config, name, nonce, project_id, secret, secrets};
-        let mut conn = establish_connection(DB_URL.to_string());
+        let mut conn = establish_connection(db_url());
 
         let results = secrets
             .filter(project_id.eq(proj_id))
@@ -370,12 +387,14 @@ pub mod interactions {
         Ok(results)
     }
 
-    pub fn delete_secret(secret_name: &str) -> Result<()> {
-        use super::db::schema::secrets::dsl::{id, name, secrets};
-        let mut conn = establish_connection(DB_URL.to_string());
+    pub fn delete_secret(proj_id: &str, secret_name: &str, environment: Environment) -> Result<()> {
+        use super::db::schema::secrets::dsl::{config, id, name, project_id, secrets};
+        let mut conn = establish_connection(db_url());
 
         let existing_secret = secrets
+            .filter(project_id.eq(proj_id))
             .filter(name.eq(secret_name))
+            .filter(config.eq(environment))
             .select(id)
             .first::<String>(&mut conn)
             .optional()?;
@@ -387,7 +406,13 @@ pub mod interactions {
             )));
         }
 
-        diesel::delete(secrets.filter(name.eq(secret_name))).execute(&mut conn)?;
+        diesel::delete(
+            secrets
+                .filter(project_id.eq(proj_id))
+                .filter(name.eq(secret_name))
+                .filter(config.eq(environment)),
+        )
+        .execute(&mut conn)?;
 
         Ok(())
     }

@@ -12,6 +12,7 @@ use cli::interactions::delete_secret;
 use cli::interactions::get_project_id;
 use cli::interactions::get_project_secrets;
 use cli::interactions::get_projects;
+use cli::interactions::secret_exists;
 use cli::interactions::set_secret;
 use colored::*;
 use crypto::encrypt;
@@ -55,6 +56,80 @@ fn main() {
                 print_error("Missing .harbor.toml. Run `harbor config create` first.");
                 process::exit(1);
             }
+            Commands::Show { environment, key } => {
+                let config = require_config(&root);
+                let environment: Environment = match environment {
+                    Some(env) => match env.parse::<Environment>() {
+                        Ok(parsed) => parsed,
+                        Err(_) => {
+                            print_error(format!("Invalid environment '{}'.", env));
+                            process::exit(1);
+                        }
+                    },
+                    None => config.default_env.into(),
+                };
+
+                let project = match get_project_id(&config.name) {
+                    Ok(p) => p,
+                    Err(e) => {
+                        print_error(format!(
+                            "Unable to get project ID for '{}': {}",
+                            config.name, e
+                        ));
+                        process::exit(1);
+                    }
+                };
+
+                let secrets = match get_project_secrets(&project, environment) {
+                    Ok(s) => s,
+                    Err(e) => {
+                        print_error(format!("Error getting secrets: {}", e));
+                        process::exit(1);
+                    }
+                };
+
+                let secret = secrets.into_iter().find(|(name, _, _)| name == &key);
+
+                match secret {
+                    Some((_, ciphertext, nonce)) => {
+                        let key = match gen_or_get_key() {
+                            Ok(k) => k,
+                            Err(_) => {
+                                print_error("Error generating or getting key");
+                                process::exit(1);
+                            }
+                        };
+                        let nonce = crypto::Nonce::from_slice(&nonce);
+                        let decrypted = match crypto::decrypt(&key, ciphertext, nonce) {
+                            Ok(d) => d,
+                            Err(e) => {
+                                print_error(format!("Error decrypting secret: {}", e));
+                                process::exit(1);
+                            }
+                        };
+
+                        let decrypted_str = match String::from_utf8(decrypted) {
+                            Ok(s) => s,
+                            Err(e) => {
+                                print_error(format!(
+                                    "Error converting decrypted secret to string: {}",
+                                    e
+                                ));
+                                process::exit(1);
+                            }
+                        };
+
+                        println!("{}", decrypted_str);
+                    }
+                    None => {
+                        print_error(format!(
+                            "Secret with key '{}' not found in project '{}'.",
+                            key, config.name
+                        ));
+                        process::exit(1);
+                    }
+                }
+            }
             Commands::Set { environment, vars } => {
                 let config = require_config(&root);
                 let environment: Environment = match environment {
@@ -93,6 +168,47 @@ fn main() {
                 };
 
                 for pair in pairs {
+                    let existed = match secret_exists(&project, &pair.0, environment) {
+                        Ok(exists) => exists,
+                        Err(e) => {
+                            print_error(format!(
+                                "Error checking existing secret for key '{}': {}",
+                                pair.0, e
+                            ));
+                            process::exit(1);
+                        }
+                    };
+                    if existed {
+                        let confirmation = match get_input(
+                            format!(
+                                "Secret '{}' already exists. Overwrite? (y/N)",
+                                pair.0
+                            )
+                            .yellow(),
+                            ':',
+                            false,
+                        ) {
+                            Ok(input) => input,
+                            Err(e) => {
+                                print_error(format!("Error getting confirmation: {}", e));
+                                process::exit(1);
+                            }
+                        };
+
+                        if confirmation.to_lowercase() != "y" {
+                            println!(
+                                "{}",
+                                format!(
+                                    "Skipped secret '{}' in {}.",
+                                    pair.0,
+                                    environment.as_str()
+                                )
+                                .dimmed()
+                            );
+                            continue;
+                        }
+                    }
+
                     let key = match gen_or_get_key() {
                         Ok(k) => k,
                         Err(_) => {
@@ -111,7 +227,20 @@ fn main() {
                         }
                     };
                     match set_secret(&project, &pair.0, encrypted, environment, nonce) {
-                        Ok(()) => {}
+                        Ok(()) => {
+                            let verb = if existed { "Updated" } else { "Set" };
+                            println!(
+                                "{}",
+                                format!(
+                                    "{} secret '{}' in {}.",
+                                    verb,
+                                    pair.0,
+                                    environment.as_str()
+                                )
+                                .bright_green()
+                                .bold()
+                            );
+                        }
                         Err(e) => {
                             print_error(format!(
                                 "Error setting secret for key '{}': {}",
@@ -122,7 +251,28 @@ fn main() {
                     }
                 }
             }
-            Commands::Delete { keys } => {
+            Commands::Delete { environment, keys } => {
+                let config = require_config(&root);
+                let environment: Environment = match environment {
+                    Some(env) => match env.parse::<Environment>() {
+                        Ok(parsed) => parsed,
+                        Err(_) => {
+                            print_error(format!("Invalid environment '{}'.", env));
+                            process::exit(1);
+                        }
+                    },
+                    None => config.default_env.into(),
+                };
+                let proj_id = match get_project_id(&config.name) {
+                    Ok(p) => p,
+                    Err(e) => {
+                        print_error(format!(
+                            "Unable to get project ID for '{}': {}",
+                            config.name, e
+                        ));
+                        process::exit(1);
+                    }
+                };
                 let mut cleaned = Vec::new();
 
                 for key in keys {
@@ -141,7 +291,7 @@ fn main() {
                 }
 
                 for key in cleaned {
-                    match delete_secret(&key) {
+                    match delete_secret(&proj_id, &key, environment) {
                         Ok(()) => {
                             println!("Deleted secret for key '{}'", key);
                         }
@@ -300,7 +450,9 @@ fn main() {
                     };
 
                     match cli::interactions::create_project(&project_name) {
-                        Ok(()) => println!("{}", "Project created successfully.".cyan()),
+                        Ok(()) => {
+                            println!("{}", "Project created successfully.".bright_green().bold())
+                        }
                         Err(e) => {
                             print_error(format!("Error creating project: {}", e));
                             process::exit(1);
@@ -342,7 +494,10 @@ fn main() {
                     if confirmation.to_lowercase() == "y" {
                         match cli::interactions::delete_project(&name) {
                             Ok(()) => {
-                                println!("{}", "Project deleted successfully.".cyan())
+                                println!(
+                                    "{}",
+                                    "Project deleted successfully.".bright_green().bold()
+                                )
                             }
                             Err(e) => {
                                 print_error(format!("Error deleting project: {}", e));
@@ -530,7 +685,12 @@ config = "dev""#,
                 let config_path = root.join(".harbor.toml");
                 match std::fs::write(&config_path, new_config) {
                     Ok(_) => {
-                        println!("Created .harbor.toml for project '{}'.", project);
+                        println!(
+                            "{}",
+                            format!("Created .harbor.toml for project '{}'.", project)
+                                .bright_green()
+                                .bold()
+                        );
                     }
                     Err(e) => {
                         print_error(format!(
@@ -571,6 +731,7 @@ fn requires_config(command: &cli::Commands) -> bool {
     matches!(
         command,
         cli::Commands::Inject { .. }
+            | cli::Commands::Show { .. }
             | cli::Commands::Set { .. }
             | cli::Commands::Delete { .. }
             | cli::Commands::Shell { .. }
