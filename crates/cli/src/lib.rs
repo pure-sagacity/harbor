@@ -112,6 +112,9 @@ pub enum Commands {
 
         #[arg(short = 's', long = "shell", default_value = "sh")]
         shell: Option<String>,
+
+        #[arg(short = 'c', long = "command")]
+        command: Option<String>,
     },
     #[command(alias = "add")]
     Set {
@@ -194,11 +197,13 @@ pub enum ProjectCommands {
     Delete { name: String },
 }
 
+const DB_URL: &str = "/Users/Maaz/Documents/Git/harbor/crates/cli/harbor.db";
+
 pub mod interactions {
-    use super::db::establish_connection;
-    use super::db::models::Project;
+    use super::DB_URL;
+    use super::db::{establish_connection, models::Project};
     use crate::Environment;
-    use crate::db::schema::secrets::config;
+    use crate::db::schema::projects::id;
     use diesel::dsl::{insert_into, update};
     use diesel::result::{DatabaseErrorKind, Error as DieselError};
     use diesel::{ExpressionMethods, OptionalExtension, QueryDsl, RunQueryDsl, SelectableHelper};
@@ -216,7 +221,7 @@ pub mod interactions {
 
     pub fn project_exists(proj_name: &str) -> Result<bool> {
         use super::db::schema::projects::dsl::{name, projects};
-        let mut conn = establish_connection();
+        let mut conn = establish_connection(DB_URL.to_string());
 
         let existing_project = projects
             .filter(name.eq(proj_name))
@@ -229,7 +234,7 @@ pub mod interactions {
 
     pub fn create_project(proj_name: &str) -> Result<()> {
         use super::db::schema::projects::dsl::{created_at, id, name, projects};
-        let mut conn = establish_connection();
+        let mut conn = establish_connection(DB_URL.to_string());
 
         if project_exists(proj_name)? {
             return construct_error("Project already exists");
@@ -255,7 +260,7 @@ pub mod interactions {
 
     pub fn delete_project(proj_name: &str) -> Result<()> {
         use super::db::schema::projects::dsl::{name, projects};
-        let mut conn = establish_connection();
+        let mut conn = establish_connection(DB_URL.to_string());
 
         if !project_exists(proj_name)? {
             return construct_error("Project does not exist");
@@ -268,7 +273,7 @@ pub mod interactions {
 
     pub fn get_projects() -> Result<Vec<Project>> {
         use super::db::schema::projects::dsl::projects;
-        let mut conn = establish_connection();
+        let mut conn = establish_connection(DB_URL.to_string());
 
         let results = projects
             .select(Project::as_select())
@@ -277,18 +282,28 @@ pub mod interactions {
         Ok(results)
     }
 
-    pub fn secret_exists() -> Result<bool> {
-        use super::db::schema::secrets::dsl::{id, secrets};
-        let mut conn = establish_connection();
+    pub fn secret_exists(
+        proj_id: &str,
+        secret_name: &str,
+        environment: Environment,
+    ) -> Result<bool> {
+        use super::db::schema::secrets::dsl::{config, id, name, project_id, secrets};
+        let mut conn = establish_connection(DB_URL.to_string());
 
-        let existing_secret = secrets.select(id).first::<String>(&mut conn).optional()?;
+        let existing_secret = secrets
+            .filter(project_id.eq(proj_id))
+            .filter(name.eq(secret_name))
+            .filter(config.eq(environment))
+            .select(id)
+            .first::<String>(&mut conn)
+            .optional()?;
 
         Ok(existing_secret.is_some())
     }
 
     pub fn get_project_id(proj_name: &str) -> Result<String> {
         use super::db::schema::projects::dsl::{id, name, projects};
-        let mut conn = establish_connection();
+        let mut conn = establish_connection(DB_URL.to_string());
 
         let project_id = projects
             .filter(name.eq(proj_name))
@@ -313,26 +328,28 @@ pub mod interactions {
         non: crypto::Nonce,
     ) -> Result<()> {
         use super::db::schema::secrets::dsl::{
-            config, created_at, name, nonce, project_id, secret, secrets,
+            config, created_at, id, name, nonce, project_id, secret, secrets,
         };
-        let mut conn = establish_connection();
+        let mut conn = establish_connection(DB_URL.to_string());
 
-        if secret_exists()? {
-            update(secrets.filter(name.eq(secret_name)))
-                .set(secret.eq(secret_value))
-                .execute(&mut conn)?;
-        } else {
-            insert_into(secrets)
-                .values((
-                    name.eq(secret_name),
-                    secret.eq(secret_value),
-                    project_id.eq(proj_id),
-                    config.eq(conf),
-                    nonce.eq(non.to_vec()),
-                    created_at.eq(chrono::Utc::now().naive_utc()),
-                ))
-                .execute(&mut conn)?;
+        if secret_exists(proj_id, secret_name, conf)? {
+            return Err(Box::new(std::io::Error::new(
+                std::io::ErrorKind::AlreadyExists,
+                "Secret already exists",
+            )));
         }
+
+        insert_into(secrets)
+            .values((
+                id.eq(Uuid::new_v4().to_string()),
+                name.eq(secret_name),
+                secret.eq(secret_value),
+                project_id.eq(proj_id),
+                config.eq(conf),
+                nonce.eq(non.to_vec()),
+                created_at.eq(chrono::Utc::now().naive_utc()),
+            ))
+            .execute(&mut conn)?;
 
         Ok(())
     }
@@ -342,7 +359,7 @@ pub mod interactions {
         environment: Environment,
     ) -> Result<Vec<(String, Vec<u8>, Vec<u8>)>> {
         use super::db::schema::secrets::dsl::{config, name, nonce, project_id, secret, secrets};
-        let mut conn = establish_connection();
+        let mut conn = establish_connection(DB_URL.to_string());
 
         let results = secrets
             .filter(project_id.eq(proj_id))
@@ -354,10 +371,16 @@ pub mod interactions {
     }
 
     pub fn delete_secret(secret_name: &str) -> Result<()> {
-        use super::db::schema::secrets::dsl::{name, secrets};
-        let mut conn = establish_connection();
+        use super::db::schema::secrets::dsl::{id, name, secrets};
+        let mut conn = establish_connection(DB_URL.to_string());
 
-        if !secret_exists()? {
+        let existing_secret = secrets
+            .filter(name.eq(secret_name))
+            .select(id)
+            .first::<String>(&mut conn)
+            .optional()?;
+
+        if existing_secret.is_none() {
             return Err(Box::new(std::io::Error::new(
                 std::io::ErrorKind::NotFound,
                 "Secret does not exist",

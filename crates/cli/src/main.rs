@@ -45,13 +45,6 @@ fn main() {
     let config_path = root.join(".harbor.toml");
     let has_config = config_path.exists();
 
-    if !has_config {
-        eprintln!(
-            "{}",
-            "Warning: .harbor.toml not found. Some commands are disabled.".yellow()
-        );
-    }
-
     match cli.command {
         Some(c) => match c {
             _ if requires_config(&c) && !has_config => {
@@ -223,11 +216,6 @@ fn main() {
                     cmd.env(key, value);
                 }
 
-                if cmd.spawn().is_err() {
-                    eprintln!("Error executing command: {:?}", after);
-                    process::exit(1);
-                }
-
                 if cmd.status().is_err() {
                     eprintln!("Error waiting for command to finish: {:?}", after);
                     process::exit(1);
@@ -347,7 +335,11 @@ fn main() {
                     }
                 }
             },
-            Commands::Shell { environment, shell } => {
+            Commands::Shell {
+                environment,
+                shell,
+                command,
+            } => {
                 let config = require_config(&root);
                 let environment: Environment = match environment {
                     Some(env) => match env.parse::<Environment>() {
@@ -372,10 +364,15 @@ fn main() {
 
                 let shell = shell
                     .or_else(|| std::env::var("SHELL").ok())
-                    .or_else(|| Some("sh".into()))
+                    .or_else(|| Some("/bin/sh".into()))
                     .unwrap();
 
                 let mut cmd = process::Command::new(&shell);
+
+                if let Some(command) = command {
+                    cmd.arg("-c");
+                    cmd.arg(command);
+                }
 
                 let secrets = match get_project_secrets(&proj_id, environment) {
                     Ok(s) => s,
@@ -422,12 +419,15 @@ fn main() {
                     cmd.env(key, value);
                 }
 
-                if cmd.spawn().is_err() {
-                    eprintln!("Error executing command: {:?}", &shell);
-                    process::exit(1);
-                }
+                let mut child = match cmd.spawn() {
+                    Ok(c) => c,
+                    Err(_) => {
+                        eprintln!("Error executing command: {:?}", &shell);
+                        process::exit(1);
+                    }
+                };
 
-                if cmd.status().is_err() {
+                if child.wait().is_err() {
                     eprintln!("Error waiting for command to finish: {:?}", &shell);
                     process::exit(1);
                 } else {

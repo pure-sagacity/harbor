@@ -12,6 +12,8 @@
     sqlite
   ];
 
+  env.RUST_BACKTRACE = "1";
+
   languages.rust = {
     enable = true;
     lsp.enable = true;
