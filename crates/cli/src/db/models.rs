@@ -1,3 +1,4 @@
+use crate::Environment;
 use crate::db::schema::{projects, secrets};
 use chrono::NaiveDateTime;
 use diesel::prelude::*;
@@ -11,13 +12,6 @@ pub struct Project {
     pub created_at: NaiveDateTime,
 }
 
-#[derive(Insertable)]
-#[diesel(table_name = projects)]
-pub struct NewProject<'a> {
-    pub id: &'a str,
-    pub name: &'a str,
-}
-
 #[derive(Debug, Queryable, Selectable)]
 #[diesel(table_name = secrets)]
 #[diesel(check_for_backend(diesel::sqlite::Sqlite))]
@@ -25,7 +19,7 @@ pub struct Secret {
     pub id: String,
     pub name: String,
     pub project_id: String,
-    pub config: String,
+    pub config: Environment,
     pub secret: Vec<u8>,
     pub nonce: Vec<u8>,
     pub created_at: NaiveDateTime,

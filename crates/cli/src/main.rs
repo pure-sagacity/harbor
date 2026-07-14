@@ -3,17 +3,27 @@ use std::process;
 use clap::Parser;
 use clap::crate_version;
 use cli::Cli;
+use cli::Environment;
+use cli::config::{Config, ConfigError};
+use cli::gen_or_get_key;
 use cli::get_input;
+use cli::interactions::delete_secret;
+use cli::interactions::get_project_id;
+use cli::interactions::get_projects;
+use cli::interactions::set_secret;
 use colored::*;
+use crypto::encrypt;
 
 const GIT_VERSION: &str = env!("GIT_VERSION");
 
 fn main() {
-    use cli::{Commands, ConfigCommands, ProjectCommands};
+    use cli::{Commands, ProjectCommands};
     let cli = Cli::parse();
 
     if cli.version {
-        let top_msg = format!("Harbor version {}", crate_version!().green()).bright_cyan();
+        let top_msg = format!("Harbor version {}", crate_version!().green())
+            .bright_cyan()
+            .bold();
         let bottom_msg =
             format!("An open source secrets management and distribution platform.").blue();
         let commit_msg = format!("Git commit {}", GIT_VERSION).dimmed();
@@ -22,39 +32,146 @@ fn main() {
         process::exit(0);
     }
 
+    let root = match std::env::current_dir() {
+        Ok(path) => path,
+        Err(err) => {
+            eprintln!("Error resolving current directory: {}", err);
+            process::exit(1);
+        }
+    };
+
+    let config_path = root.join(".harbor.toml");
+    let has_config = config_path.exists();
+
+    if !has_config {
+        eprintln!(
+            "{}",
+            "Warning: .harbor.toml not found. Some commands are disabled.".yellow()
+        );
+    }
+
     match cli.command {
         Some(c) => match c {
-            Commands::Add {} => {
-                println!("Add command executed");
-            }
-            Commands::Config { command } => match command {
-                ConfigCommands::List {} => {
-                    println!("Config list command executed");
-                }
-                ConfigCommands::Create { project } => {
-                    println!("Config create command executed for project: {}", project);
-                }
-                ConfigCommands::Delete { project, name } => {
-                    println!(
-                        "Config delete command executed for project: {}, name: {}",
-                        project, name
-                    );
-                }
-            },
-            Commands::Inject { verbose, after } => {
-                println!(
-                    "Inject command executed with verbose: {}, after: {:?}",
-                    verbose, after
+            _ if requires_config(&c) && !has_config => {
+                eprintln!(
+                    "{}",
+                    "Missing .harbor.toml. Run `harbor config create` first.".yellow()
                 );
+                process::exit(1);
+            }
+            Commands::Set { environment, vars } => {
+                let config = require_config(&root);
+                let environment: Environment = match environment {
+                    Some(env) => match env.parse::<Environment>() {
+                        Ok(parsed) => parsed,
+                        Err(_) => {
+                            eprintln!("Invalid environment '{}'.", env);
+                            process::exit(1);
+                        }
+                    },
+                    None => config.default_env.into(),
+                };
+
+                let pairs = match cli::parse_secret_pairs(&vars) {
+                    Ok(pairs) => pairs,
+                    Err(e) => {
+                        eprintln!("Error parsing secrets: {}", e);
+                        process::exit(1);
+                    }
+                };
+
+                if pairs.is_empty() {
+                    eprintln!("No secrets provided. Use KEY=VALUE pairs.");
+                    process::exit(1);
+                }
+
+                let project = match get_project_id(&config.name) {
+                    Ok(p) => p,
+                    Err(e) => {
+                        eprintln!("Unable to get project ID for '{}': {}", config.name, e);
+                        process::exit(1);
+                    }
+                };
+
+                for pair in pairs {
+                    let key = match gen_or_get_key() {
+                        Ok(k) => k,
+                        Err(_) => {
+                            eprintln!("Error generating or getting key");
+                            process::exit(1);
+                        }
+                    };
+                    let (nonce, encrypted) = match encrypt(&key, pair.1.as_bytes().to_vec()) {
+                        Ok(result) => result,
+                        Err(e) => {
+                            eprintln!("Error encrypting secret for key '{}': {}", pair.0, e);
+                            process::exit(1);
+                        }
+                    };
+                    match set_secret(&project, &pair.0, encrypted, environment, nonce) {
+                        Ok(()) => {}
+                        Err(e) => {
+                            eprintln!("Error setting secret for key '{}': {}", pair.0, e);
+                            process::exit(1);
+                        }
+                    }
+                }
+            }
+            Commands::Delete { keys } => {
+                let mut cleaned = Vec::new();
+
+                for key in keys {
+                    let trimmed = key.trim();
+                    if !trimmed.is_empty() {
+                        cleaned.push(trimmed.to_string());
+                    }
+                }
+
+                // Redefining as immutable
+                let cleaned = cleaned;
+
+                if cleaned.is_empty() {
+                    eprintln!("No secret keys provided. Use one or more keys.");
+                    process::exit(1);
+                }
+
+                for key in cleaned {
+                    match delete_secret(&key) {
+                        Ok(()) => {
+                            println!("Deleted secret for key '{}'", key);
+                        }
+                        Err(e) => {
+                            eprintln!("Error deleting secret for key '{}': {}", key, e);
+                            process::exit(1);
+                        }
+                    };
+                }
+            }
+            Commands::Inject { after } => {
+                let _config = require_config(&root);
+
                 // for harbor inject -- bun dev
                 // after = ["bun", "dev"]
+
+
             }
             Commands::List {} => {
+                let _config = require_config(&root);
+
                 println!("List command executed");
             }
             Commands::Project { command } => match command {
                 ProjectCommands::List {} => {
-                    println!("Project list command executed");
+                    let projects = match get_projects() {
+                        Ok(projects) => projects,
+                        Err(e) => {
+                            eprintln!("Error getting projects: {}", e);
+                            process::exit(1);
+                        }
+                    };
+                    for project in projects {
+                        println!(" - {}", project.name.blue().bold());
+                    }
                 }
                 ProjectCommands::Create {} => {
                     let project_name = match get_input("Project name", ':', false) {
@@ -124,7 +241,86 @@ fn main() {
                 println!("Shell command executed");
             }
             Commands::Setup {} => {
-                println!("Setup command executed");
+                use std::process;
+                // Setup will get all projects and prompt the user to select one,
+                // then create a .harbor.toml file in the current directory with the selected project name.
+                let projects = match get_projects() {
+                    Ok(projects) => projects,
+                    Err(e) => {
+                        eprintln!("Error getting projects: {}", e);
+                        process::exit(1);
+                    }
+                };
+
+                if projects.is_empty() {
+                    eprintln!("No projects found. Please create a project first.");
+                    process::exit(1);
+                }
+
+                // We'll just use fzf, and pipe the project names to it, and get the selected project name back.
+                let project_names: Vec<String> = projects.iter().map(|p| p.name.clone()).collect();
+
+                let mut fzf = match process::Command::new("fzf")
+                    .stdin(process::Stdio::piped())
+                    .stdout(process::Stdio::piped())
+                    .spawn()
+                {
+                    Ok(c) => c,
+                    Err(e) => {
+                        eprintln!("Error spawning fzf: {}", e);
+                        process::exit(1);
+                    }
+                };
+
+                {
+                    let mut stdin = fzf.stdin.take().expect("Failed to open stdin");
+                    for name in &project_names {
+                        use std::io::Write;
+                        writeln!(stdin, "{}", name).expect("Failed to write to stdin");
+                    }
+                    drop(stdin);
+                }
+
+                let output = match fzf.wait_with_output() {
+                    Ok(o) => o,
+                    Err(e) => {
+                        eprintln!("Error waiting for fzf: {}", e);
+                        process::exit(1);
+                    }
+                };
+
+                if !output.status.success() {
+                    eprintln!("fzf exited with non-zero status");
+                    process::exit(1);
+                }
+
+                let project = String::from_utf8_lossy(&output.stdout).trim().to_string();
+
+                if project.is_empty() {
+                    eprintln!("No project selected.");
+                    process::exit(1);
+                }
+
+                let new_config = format!(
+                    r#"version = "1"
+name = "{}"
+config = "dev""#,
+                    project
+                );
+
+                let config_path = root.join(".harbor.toml");
+                match std::fs::write(&config_path, new_config) {
+                    Ok(_) => {
+                        println!("Created .harbor.toml for project '{}'.", project);
+                    }
+                    Err(e) => {
+                        eprintln!(
+                            "Error creating .harbor.toml for project '{}': {}",
+                            project, e
+                        );
+                        process::exit(1);
+                    }
+                }
             }
         },
         None => {
@@ -136,4 +332,32 @@ fn main() {
             process::exit(0);
         }
     }
+}
+
+fn require_config(root: &std::path::Path) -> Config {
+    match Config::from_repo_root(root) {
+        Ok(config) => config,
+        Err(ConfigError::Io(err)) if err.kind() == std::io::ErrorKind::NotFound => {
+            eprintln!(
+                "{}",
+                "Missing .harbor.toml. Run `harbor config create` first.".yellow()
+            );
+            process::exit(1);
+        }
+        Err(err) => {
+            eprintln!("Error reading config: {}", err);
+            process::exit(1);
+        }
+    }
+}
+
+fn requires_config(command: &cli::Commands) -> bool {
+    matches!(
+        command,
+        cli::Commands::Inject { .. }
+            | cli::Commands::Set { .. }
+            | cli::Commands::Delete { .. }
+            | cli::Commands::Shell { .. }
+            | cli::Commands::List { .. }
+    )
 }

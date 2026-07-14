@@ -10,7 +10,8 @@ CREATE TABLE secrets (
     id TEXT PRIMARY KEY NOT NULL,
     name TEXT NOT NULL,
     project_id TEXT NOT NULL,
-    config TEXT NOT NULL,
+    config TEXT NOT NULL
+        CHECK (config IN ('dev', 'prod', 'staging')),
     secret BLOB NOT NULL,
     nonce BLOB NOT NULL,
     created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,

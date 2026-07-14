@@ -1,12 +1,86 @@
 use base64::{Engine, engine::general_purpose::STANDARD};
 use clap::{Parser, Subcommand};
-use colored::Colorize;
 use crypto::helper::gen_key;
+use diesel::backend::Backend;
+use diesel::deserialize::{self, FromSql};
+use diesel::serialize::{self, IsNull, Output, ToSql};
+use diesel::sql_types::Text;
+use diesel::sqlite::Sqlite;
 use keyring::Entry;
+use serde::Deserialize;
 use std::error::Error;
 use std::io::{self, Write};
+pub mod config;
 mod db;
 mod store;
+
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Deserialize, diesel::AsExpression, diesel::FromSqlRow,
+)]
+#[diesel(sql_type = Text)]
+#[serde(rename_all = "kebab-case")]
+pub enum Environment {
+    Dev,
+    Prod,
+    Staging,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EnvironmentParseError(String);
+
+impl Environment {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Environment::Dev => "dev",
+            Environment::Prod => "prod",
+            Environment::Staging => "staging",
+        }
+    }
+}
+
+impl std::fmt::Display for Environment {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+impl std::str::FromStr for Environment {
+    type Err = EnvironmentParseError;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "dev" => Ok(Environment::Dev),
+            "prod" => Ok(Environment::Prod),
+            "staging" => Ok(Environment::Staging),
+            _ => Err(EnvironmentParseError(
+                "Environment must be one of: dev, prod, staging".to_string(),
+            )),
+        }
+    }
+}
+
+impl std::fmt::Display for EnvironmentParseError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl std::error::Error for EnvironmentParseError {}
+
+impl ToSql<Text, Sqlite> for Environment {
+    fn to_sql<'b>(&'b self, out: &mut Output<'b, '_, Sqlite>) -> serialize::Result {
+        out.set_value(self.as_str());
+        Ok(IsNull::No)
+    }
+}
+
+impl FromSql<Text, Sqlite> for Environment {
+    fn from_sql(bytes: <Sqlite as Backend>::RawValue<'_>) -> deserialize::Result<Self> {
+        let raw = <String as FromSql<Text, Sqlite>>::from_sql(bytes)?;
+        raw.parse::<Environment>()
+            .map_err(|err| Box::new(err) as Box<dyn std::error::Error + Send + Sync>)
+    }
+}
 
 #[derive(Parser)]
 #[clap(
@@ -26,24 +100,82 @@ pub struct Cli {
 #[derive(Subcommand)]
 pub enum Commands {
     Inject {
-        #[arg(short, long)]
-        verbose: bool,
-
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         after: Vec<String>,
     },
     Shell {},
-    Add {},
+    #[command(alias = "add")]
+    Set {
+        #[arg(short = 'e', long = "environment")]
+        environment: Option<String>,
+
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        vars: Vec<String>,
+    },
+    Delete {
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        keys: Vec<String>,
+    },
     Setup {},
     List {},
     Project {
         #[command(subcommand)]
         command: ProjectCommands,
     },
-    Config {
-        #[command(subcommand)]
-        command: ConfigCommands,
-    },
+}
+
+pub fn parse_secret_pairs(raw: &[String]) -> Result<Vec<(String, String)>, Box<dyn Error>> {
+    let mut pairs = Vec::new();
+
+    for item in raw {
+        let trimmed = item.trim();
+
+        if trimmed.is_empty() {
+            continue;
+        }
+
+        let (key, value) = trimmed.split_once('=').ok_or_else(|| {
+            Box::new(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                format!("Invalid secret format: {}", item),
+            )) as Box<dyn Error>
+        })?;
+
+        if key.trim().is_empty() {
+            return Err(Box::new(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "Secret key cannot be empty",
+            )));
+        }
+
+        pairs.push((key.to_string(), value.to_string()));
+    }
+
+    Ok(pairs)
+}
+
+pub fn format_doppler_set_command(secrets: &[(String, String)]) -> String {
+    let mut command = String::from("doppler secrets set");
+
+    if secrets.is_empty() {
+        return command;
+    }
+
+    command.push_str(" \\");
+
+    for (index, (key, value)) in secrets.iter().enumerate() {
+        command.push_str("\n  ");
+        command.push_str(key);
+        command.push_str("=\"");
+        command.push_str(value);
+        command.push('"');
+
+        if index + 1 != secrets.len() {
+            command.push_str(" \\");
+        }
+    }
+
+    command
 }
 
 #[derive(Subcommand)]
@@ -53,36 +185,31 @@ pub enum ProjectCommands {
     Delete { name: String },
 }
 
-#[derive(Subcommand)]
-pub enum ConfigCommands {
-    List {},
-    Create { project: String },
-    Delete { project: String, name: String },
-}
-
 pub mod interactions {
-    use super::db::models::{NewProject, Project};
-    use super::db::{
-        establish_connection,
-        schema::projects::dsl::{name as project_name, projects},
-    };
+    use super::db::establish_connection;
+    use super::db::models::Project;
+    use crate::Environment;
+    use diesel::dsl::{insert_into, update};
     use diesel::result::{DatabaseErrorKind, Error as DieselError};
     use diesel::{ExpressionMethods, OptionalExtension, QueryDsl, RunQueryDsl, SelectableHelper};
     use std::error::Error;
     use uuid::Uuid;
 
-    fn construct_error(message: &str) -> Result<(), Box<dyn Error>> {
+    type Result<T> = std::result::Result<T, Box<dyn Error>>;
+
+    fn construct_error(message: &str) -> Result<()> {
         Err(Box::new(std::io::Error::new(
             std::io::ErrorKind::AlreadyExists,
             message.to_string(),
         )))
     }
 
-    pub fn project_exists(proj_name: &str) -> Result<bool, Box<dyn Error>> {
+    pub fn project_exists(proj_name: &str) -> Result<bool> {
+        use super::db::schema::projects::dsl::{name, projects};
         let mut conn = establish_connection();
 
         let existing_project = projects
-            .filter(project_name.eq(proj_name))
+            .filter(name.eq(proj_name))
             .select(Project::as_select())
             .first::<Project>(&mut conn)
             .optional()?;
@@ -90,21 +217,22 @@ pub mod interactions {
         Ok(existing_project.is_some())
     }
 
-    pub fn create_project(proj_name: &str) -> Result<(), Box<dyn Error>> {
+    pub fn create_project(proj_name: &str) -> Result<()> {
+        use super::db::schema::projects::dsl::{created_at, id, name, projects};
         let mut conn = establish_connection();
 
         if project_exists(proj_name)? {
             return construct_error("Project already exists");
         }
 
-        let project_id = Uuid::new_v4().to_string();
-        let new_project = NewProject {
-            id: &project_id,
-            name: proj_name,
-        };
+        let proj_id = Uuid::new_v4().to_string();
 
-        match diesel::insert_into(projects)
-            .values(&new_project)
+        match insert_into(projects)
+            .values((
+                id.eq(proj_id),
+                name.eq(proj_name),
+                created_at.eq(chrono::Utc::now().naive_utc()),
+            ))
             .execute(&mut conn)
         {
             Ok(_) => Ok(()),
@@ -115,19 +243,106 @@ pub mod interactions {
         }
     }
 
-    pub fn delete_project(proj_name: &str) -> Result<(), Box<dyn Error>> {
+    pub fn delete_project(proj_name: &str) -> Result<()> {
+        use super::db::schema::projects::dsl::{name, projects};
         let mut conn = establish_connection();
 
         if !project_exists(proj_name)? {
             return construct_error("Project does not exist");
         }
 
-        diesel::delete(projects.filter(project_name.eq(proj_name))).execute(&mut conn)?;
+        diesel::delete(projects.filter(name.eq(proj_name))).execute(&mut conn)?;
+
+        Ok(())
+    }
+
+    pub fn get_projects() -> Result<Vec<Project>> {
+        use super::db::schema::projects::dsl::projects;
+        let mut conn = establish_connection();
+
+        let results = projects
+            .select(Project::as_select())
+            .load::<Project>(&mut conn)?;
+
+        Ok(results)
+    }
+
+    pub fn secret_exists() -> Result<bool> {
+        use super::db::schema::secrets::dsl::{id, secrets};
+        let mut conn = establish_connection();
+
+        let existing_secret = secrets.select(id).first::<String>(&mut conn).optional()?;
+
+        Ok(existing_secret.is_some())
+    }
+
+    pub fn get_project_id(proj_name: &str) -> Result<String> {
+        use super::db::schema::projects::dsl::{id, name, projects};
+        let mut conn = establish_connection();
+
+        let project_id = projects
+            .filter(name.eq(proj_name))
+            .select(id)
+            .first::<String>(&mut conn)
+            .optional()?;
+
+        match project_id {
+            Some(pid) => Ok(pid),
+            None => Err(Box::new(std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                "Project not found",
+            ))),
+        }
+    }
+
+    pub fn set_secret(
+        proj_id: &str,
+        secret_name: &str,
+        secret_value: Vec<u8>,
+        conf: Environment,
+        non: crypto::Nonce,
+    ) -> Result<()> {
+        use super::db::schema::secrets::dsl::{
+            config, created_at, name, nonce, project_id, secret, secrets,
+        };
+        let mut conn = establish_connection();
+
+        if secret_exists()? {
+            update(secrets.filter(name.eq(secret_name)))
+                .set(secret.eq(secret_value))
+                .execute(&mut conn)?;
+        } else {
+            insert_into(secrets)
+                .values((
+                    name.eq(secret_name),
+                    secret.eq(secret_value),
+                    project_id.eq(proj_id),
+                    config.eq(conf),
+                    nonce.eq(non.to_vec()),
+                    created_at.eq(chrono::Utc::now().naive_utc()),
+                ))
+                .execute(&mut conn)?;
+        }
+
+        Ok(())
+    }
+
+    pub fn delete_secret(secret_name: &str) -> Result<()> {
+        use super::db::schema::secrets::dsl::{name, secrets};
+        let mut conn = establish_connection();
+
+        if !secret_exists()? {
+            return Err(Box::new(std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                "Secret does not exist",
+            )));
+        }
+
+        diesel::delete(secrets.filter(name.eq(secret_name))).execute(&mut conn)?;
 
         Ok(())
     }
 }
-
 pub fn gen_or_get_key() -> Result<crypto::Key, Box<dyn Error>> {
     let entry = Entry::new("harbor", "encryption-key")?;
 
@@ -153,7 +368,11 @@ pub fn gen_or_get_key() -> Result<crypto::Key, Box<dyn Error>> {
     }
 }
 
-pub fn get_input(message: impl std::fmt::Display, prompt: char, new_line: bool) -> Result<String, Box<dyn Error>> {
+pub fn get_input(
+    message: impl std::fmt::Display,
+    prompt: char,
+    new_line: bool,
+) -> Result<String, Box<dyn Error>> {
     let mut input = String::new();
 
     if new_line {
