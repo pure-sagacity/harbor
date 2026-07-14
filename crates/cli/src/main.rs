@@ -18,6 +18,10 @@ use crypto::encrypt;
 
 const GIT_VERSION: &str = env!("GIT_VERSION");
 
+fn print_error(message: impl std::fmt::Display) {
+    eprintln!("{}", message.to_string().bright_red().bold());
+}
+
 fn main() {
     use cli::{Commands, ProjectCommands};
     let cli = Cli::parse();
@@ -37,7 +41,7 @@ fn main() {
     let root = match std::env::current_dir() {
         Ok(path) => path,
         Err(err) => {
-            eprintln!("Error resolving current directory: {}", err);
+            print_error(format!("Error resolving current directory: {}", err));
             process::exit(1);
         }
     };
@@ -48,10 +52,7 @@ fn main() {
     match cli.command {
         Some(c) => match c {
             _ if requires_config(&c) && !has_config => {
-                eprintln!(
-                    "{}",
-                    "Missing .harbor.toml. Run `harbor config create` first.".yellow()
-                );
+                print_error("Missing .harbor.toml. Run `harbor config create` first.");
                 process::exit(1);
             }
             Commands::Set { environment, vars } => {
@@ -60,7 +61,7 @@ fn main() {
                     Some(env) => match env.parse::<Environment>() {
                         Ok(parsed) => parsed,
                         Err(_) => {
-                            eprintln!("Invalid environment '{}'.", env);
+                            print_error(format!("Invalid environment '{}'.", env));
                             process::exit(1);
                         }
                     },
@@ -70,20 +71,23 @@ fn main() {
                 let pairs = match cli::parse_secret_pairs(&vars) {
                     Ok(pairs) => pairs,
                     Err(e) => {
-                        eprintln!("Error parsing secrets: {}", e);
+                        print_error(format!("Error parsing secrets: {}", e));
                         process::exit(1);
                     }
                 };
 
                 if pairs.is_empty() {
-                    eprintln!("No secrets provided. Use KEY=VALUE pairs.");
+                    print_error("No secrets provided. Use KEY=VALUE pairs.");
                     process::exit(1);
                 }
 
                 let project = match get_project_id(&config.name) {
                     Ok(p) => p,
                     Err(e) => {
-                        eprintln!("Unable to get project ID for '{}': {}", config.name, e);
+                        print_error(format!(
+                            "Unable to get project ID for '{}': {}",
+                            config.name, e
+                        ));
                         process::exit(1);
                     }
                 };
@@ -92,21 +96,27 @@ fn main() {
                     let key = match gen_or_get_key() {
                         Ok(k) => k,
                         Err(_) => {
-                            eprintln!("Error generating or getting key");
+                            print_error("Error generating or getting key");
                             process::exit(1);
                         }
                     };
                     let (nonce, encrypted) = match encrypt(&key, pair.1.as_bytes().to_vec()) {
                         Ok(result) => result,
                         Err(e) => {
-                            eprintln!("Error encrypting secret for key '{}': {}", pair.0, e);
+                            print_error(format!(
+                                "Error encrypting secret for key '{}': {}",
+                                pair.0, e
+                            ));
                             process::exit(1);
                         }
                     };
                     match set_secret(&project, &pair.0, encrypted, environment, nonce) {
                         Ok(()) => {}
                         Err(e) => {
-                            eprintln!("Error setting secret for key '{}': {}", pair.0, e);
+                            print_error(format!(
+                                "Error setting secret for key '{}': {}",
+                                pair.0, e
+                            ));
                             process::exit(1);
                         }
                     }
@@ -126,7 +136,7 @@ fn main() {
                 let cleaned = cleaned;
 
                 if cleaned.is_empty() {
-                    eprintln!("No secret keys provided. Use one or more keys.");
+                    print_error("No secret keys provided. Use one or more keys.");
                     process::exit(1);
                 }
 
@@ -136,7 +146,7 @@ fn main() {
                             println!("Deleted secret for key '{}'", key);
                         }
                         Err(e) => {
-                            eprintln!("Error deleting secret for key '{}': {}", key, e);
+                            print_error(format!("Error deleting secret for key '{}': {}", key, e));
                             process::exit(1);
                         }
                     };
@@ -148,7 +158,7 @@ fn main() {
                     Some(env) => match env.parse::<Environment>() {
                         Ok(parsed) => parsed,
                         Err(_) => {
-                            eprintln!("Invalid environment '{}'.", env);
+                            print_error(format!("Invalid environment '{}'.", env));
                             process::exit(1);
                         }
                     },
@@ -157,7 +167,10 @@ fn main() {
                 let proj_id = match get_project_id(&config.name) {
                     Ok(p) => p,
                     Err(e) => {
-                        eprintln!("Unable to get project ID for '{}': {}", config.name, e);
+                        print_error(format!(
+                            "Unable to get project ID for '{}': {}",
+                            config.name, e
+                        ));
                         process::exit(1);
                     }
                 };
@@ -174,7 +187,7 @@ fn main() {
                 let secrets = match get_project_secrets(&proj_id, environment) {
                     Ok(s) => s,
                     Err(e) => {
-                        eprintln!("Error getting secrets: {}", e);
+                        print_error(format!("Error getting secrets: {}", e));
                         process::exit(1);
                     }
                 };
@@ -185,7 +198,7 @@ fn main() {
                     let key = match gen_or_get_key() {
                         Ok(k) => k,
                         Err(_) => {
-                            eprintln!("Error generating or getting key");
+                            print_error("Error generating or getting key");
                             process::exit(1);
                         }
                     };
@@ -193,7 +206,10 @@ fn main() {
                     let decrypted = match crypto::decrypt(&key, ciphertext, nonce) {
                         Ok(d) => d,
                         Err(e) => {
-                            eprintln!("Error decrypting secret for key '{}': {}", name, e);
+                            print_error(format!(
+                                "Error decrypting secret for key '{}': {}",
+                                name, e
+                            ));
                             process::exit(1);
                         }
                     };
@@ -201,10 +217,10 @@ fn main() {
                     let decrypted_str = match String::from_utf8(decrypted) {
                         Ok(s) => s,
                         Err(e) => {
-                            eprintln!(
+                            print_error(format!(
                                 "Error converting decrypted secret to string for key '{}': {}",
                                 name, e
-                            );
+                            ));
                             process::exit(1);
                         }
                     };
@@ -217,7 +233,7 @@ fn main() {
                 }
 
                 if cmd.status().is_err() {
-                    eprintln!("Error waiting for command to finish: {:?}", after);
+                    print_error(format!("Error waiting for command to finish: {:?}", after));
                     process::exit(1);
                 } else {
                     process::exit(0);
@@ -229,7 +245,10 @@ fn main() {
                 let proj_id = match get_project_id(&config.name) {
                     Ok(p) => p,
                     Err(e) => {
-                        eprintln!("Unable to get project ID for '{}': {}", config.name, e);
+                        print_error(format!(
+                            "Unable to get project ID for '{}': {}",
+                            config.name, e
+                        ));
                         process::exit(1);
                     }
                 };
@@ -237,7 +256,7 @@ fn main() {
                 let secrets = match get_project_secrets(&proj_id, Environment::Dev) {
                     Ok(s) => s,
                     Err(e) => {
-                        eprintln!("Error getting secrets: {}", e);
+                        print_error(format!("Error getting secrets: {}", e));
                         process::exit(1);
                     }
                 };
@@ -263,7 +282,7 @@ fn main() {
                     let projects = match get_projects() {
                         Ok(projects) => projects,
                         Err(e) => {
-                            eprintln!("Error getting projects: {}", e);
+                            print_error(format!("Error getting projects: {}", e));
                             process::exit(1);
                         }
                     };
@@ -275,7 +294,7 @@ fn main() {
                     let project_name = match get_input("Project name", ':', false) {
                         Ok(name) => name,
                         Err(e) => {
-                            eprintln!("Error getting project name: {}", e);
+                            print_error(format!("Error getting project name: {}", e));
                             process::exit(1);
                         }
                     };
@@ -283,7 +302,7 @@ fn main() {
                     match cli::interactions::create_project(&project_name) {
                         Ok(()) => println!("{}", "Project created successfully.".cyan()),
                         Err(e) => {
-                            eprintln!("Error creating project: {}", e);
+                            print_error(format!("Error creating project: {}", e));
                             process::exit(1);
                         }
                     }
@@ -293,13 +312,13 @@ fn main() {
                     let exists = match cli::interactions::project_exists(&name) {
                         Ok(exists) => exists,
                         Err(e) => {
-                            eprintln!("Error checking if project exists: {}", e);
+                            print_error(format!("Error checking if project exists: {}", e));
                             process::exit(1);
                         }
                     };
 
                     if !exists {
-                        eprintln!("Project '{}' does not exist.", name);
+                        print_error(format!("Project '{}' does not exist.", name));
                         process::exit(1);
                     }
 
@@ -315,7 +334,7 @@ fn main() {
                     ) {
                         Ok(input) => input,
                         Err(e) => {
-                            eprintln!("Error getting confirmation: {}", e);
+                            print_error(format!("Error getting confirmation: {}", e));
                             process::exit(1);
                         }
                     };
@@ -326,7 +345,7 @@ fn main() {
                                 println!("{}", "Project deleted successfully.".cyan())
                             }
                             Err(e) => {
-                                eprintln!("Error deleting project: {}", e);
+                                print_error(format!("Error deleting project: {}", e));
                                 process::exit(1);
                             }
                         }
@@ -345,7 +364,7 @@ fn main() {
                     Some(env) => match env.parse::<Environment>() {
                         Ok(parsed) => parsed,
                         Err(_) => {
-                            eprintln!("Invalid environment '{}'.", env);
+                            print_error(format!("Invalid environment '{}'.", env));
                             process::exit(1);
                         }
                     },
@@ -354,7 +373,10 @@ fn main() {
                 let proj_id = match get_project_id(&config.name) {
                     Ok(p) => p,
                     Err(e) => {
-                        eprintln!("Unable to get project ID for '{}': {}", config.name, e);
+                        print_error(format!(
+                            "Unable to get project ID for '{}': {}",
+                            config.name, e
+                        ));
                         process::exit(1);
                     }
                 };
@@ -377,7 +399,7 @@ fn main() {
                 let secrets = match get_project_secrets(&proj_id, environment) {
                     Ok(s) => s,
                     Err(e) => {
-                        eprintln!("Error getting secrets: {}", e);
+                        print_error(format!("Error getting secrets: {}", e));
                         process::exit(1);
                     }
                 };
@@ -388,7 +410,7 @@ fn main() {
                     let key = match gen_or_get_key() {
                         Ok(k) => k,
                         Err(_) => {
-                            eprintln!("Error generating or getting key");
+                            print_error("Error generating or getting key");
                             process::exit(1);
                         }
                     };
@@ -396,7 +418,10 @@ fn main() {
                     let decrypted = match crypto::decrypt(&key, ciphertext, nonce) {
                         Ok(d) => d,
                         Err(e) => {
-                            eprintln!("Error decrypting secret for key '{}': {}", name, e);
+                            print_error(format!(
+                                "Error decrypting secret for key '{}': {}",
+                                name, e
+                            ));
                             process::exit(1);
                         }
                     };
@@ -404,10 +429,10 @@ fn main() {
                     let decrypted_str = match String::from_utf8(decrypted) {
                         Ok(s) => s,
                         Err(e) => {
-                            eprintln!(
+                            print_error(format!(
                                 "Error converting decrypted secret to string for key '{}': {}",
                                 name, e
-                            );
+                            ));
                             process::exit(1);
                         }
                     };
@@ -422,13 +447,13 @@ fn main() {
                 let mut child = match cmd.spawn() {
                     Ok(c) => c,
                     Err(_) => {
-                        eprintln!("Error executing command: {:?}", &shell);
+                        print_error(format!("Error executing command: {:?}", &shell));
                         process::exit(1);
                     }
                 };
 
                 if child.wait().is_err() {
-                    eprintln!("Error waiting for command to finish: {:?}", &shell);
+                    print_error(format!("Error waiting for command to finish: {:?}", &shell));
                     process::exit(1);
                 } else {
                     process::exit(0);
@@ -441,13 +466,13 @@ fn main() {
                 let projects = match get_projects() {
                     Ok(projects) => projects,
                     Err(e) => {
-                        eprintln!("Error getting projects: {}", e);
+                        print_error(format!("Error getting projects: {}", e));
                         process::exit(1);
                     }
                 };
 
                 if projects.is_empty() {
-                    eprintln!("No projects found. Please create a project first.");
+                    print_error("No projects found. Please create a project first.");
                     process::exit(1);
                 }
 
@@ -461,7 +486,7 @@ fn main() {
                 {
                     Ok(c) => c,
                     Err(e) => {
-                        eprintln!("Error spawning fzf: {}", e);
+                        print_error(format!("Error spawning fzf: {}", e));
                         process::exit(1);
                     }
                 };
@@ -478,20 +503,20 @@ fn main() {
                 let output = match fzf.wait_with_output() {
                     Ok(o) => o,
                     Err(e) => {
-                        eprintln!("Error waiting for fzf: {}", e);
+                        print_error(format!("Error waiting for fzf: {}", e));
                         process::exit(1);
                     }
                 };
 
                 if !output.status.success() {
-                    eprintln!("fzf exited with non-zero status");
+                    print_error("fzf exited with non-zero status");
                     process::exit(1);
                 }
 
                 let project = String::from_utf8_lossy(&output.stdout).trim().to_string();
 
                 if project.is_empty() {
-                    eprintln!("No project selected.");
+                    print_error("No project selected.");
                     process::exit(1);
                 }
 
@@ -508,10 +533,10 @@ config = "dev""#,
                         println!("Created .harbor.toml for project '{}'.", project);
                     }
                     Err(e) => {
-                        eprintln!(
+                        print_error(format!(
                             "Error creating .harbor.toml for project '{}': {}",
                             project, e
-                        );
+                        ));
                         process::exit(1);
                     }
                 }
@@ -532,14 +557,11 @@ fn require_config(root: &std::path::Path) -> Config {
     match Config::from_repo_root(root) {
         Ok(config) => config,
         Err(ConfigError::Io(err)) if err.kind() == std::io::ErrorKind::NotFound => {
-            eprintln!(
-                "{}",
-                "Missing .harbor.toml. Run `harbor config create` first.".yellow()
-            );
+            print_error("Missing .harbor.toml. Run `harbor config create` first.");
             process::exit(1);
         }
         Err(err) => {
-            eprintln!("Error reading config: {}", err);
+            print_error(format!("Error reading config: {}", err));
             process::exit(1);
         }
     }
