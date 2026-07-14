@@ -11,6 +11,13 @@ pub struct Project {
     pub created_at: NaiveDateTime,
 }
 
+#[derive(Insertable)]
+#[diesel(table_name = projects)]
+pub struct NewProject<'a> {
+    pub id: &'a str,
+    pub name: &'a str,
+}
+
 #[derive(Debug, Queryable, Selectable)]
 #[diesel(table_name = secrets)]
 #[diesel(check_for_backend(diesel::sqlite::Sqlite))]
