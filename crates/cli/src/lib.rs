@@ -1,8 +1,10 @@
+use base64::{Engine, engine::general_purpose::STANDARD};
 use clap::{Args, Parser, Subcommand};
+use crypto::helper::gen_key;
 use keyring::Entry;
 use std::error::Error;
 mod db;
-
+mod store;
 #[derive(Parser)]
 #[clap(
     name = "Harbor",
@@ -58,38 +60,27 @@ pub enum ConfigCommands {
     Delete { project: String, name: String },
 }
 
-pub fn gen_or_get_key() -> Result<crypto::Key, Box<dyn Error>> {
+fn gen_or_get_key() -> Result<crypto::Key, Box<dyn Error>> {
     let entry = Entry::new("harbor", "encryption-key")?;
 
     match entry.get_password() {
-        Ok(hex_string) => {
-            let key_bytes = hex::decode(hex_string)?;
+        Ok(encoded) => {
+            let bytes = STANDARD.decode(encoded)?;
 
-            if key_bytes.len() != 32 {
-                return Err("Retrieved key length is invalid (must be 32 bytes)".into());
-            }
+            let key = crypto::helper::key_from(bytes)?;
 
-            Ok(key_bytes
-                .as_slice()
-                .try_into()
-                .map_err(|_| "Invalid key length")?)
+            Ok(key)
         }
 
-        Err(err) => {
-            if is_key_not_found(&err) {
-                let key = crypto::helper::gen_key();
+        Err(keyring::Error::NoEntry) => {
+            let key = gen_key();
 
-                let hex_string = hex::encode(key.as_slice());
-                entry.set_password(&hex_string)?;
+            let encoded = STANDARD.encode(key);
+            entry.set_password(&encoded)?;
 
-                Ok(key)
-            } else {
-                Err(Box::new(err))
-            }
+            Ok(key)
         }
+
+        Err(err) => Err(Box::new(err)),
     }
-}
-
-fn is_key_not_found(err: &keyring::Error) -> bool {
-    matches!(err, keyring::Error::NoEntry)
 }

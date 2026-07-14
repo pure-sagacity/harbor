@@ -9,13 +9,21 @@ pub type Key = chacha20poly1305::Key;
 pub type Nonce = chacha20poly1305::Nonce;
 
 pub mod helper {
-    use super::{Generate, Key, Nonce};
+    use super::{Generate, Key, Nonce, Result};
     pub fn gen_nonce() -> Nonce {
         Nonce::generate()
     }
 
     pub fn gen_key() -> Key {
         Key::generate()
+    }
+
+    pub fn key_from(bytes: Vec<u8>) -> Result<Key> {
+        let array: [u8; 32] = bytes
+            .try_into()
+            .map_err(|_| "key must be exactly 32 bytes".to_string())?;
+
+        Ok(Key::from(array))
     }
 }
 
