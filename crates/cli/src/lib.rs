@@ -100,10 +100,19 @@ pub struct Cli {
 #[derive(Subcommand)]
 pub enum Commands {
     Inject {
+        #[arg(short = 'e', long = "environment")]
+        environment: Option<String>,
+
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         after: Vec<String>,
     },
-    Shell {},
+    Shell {
+        #[arg(short = 'e', long = "environment")]
+        environment: Option<String>,
+
+        #[arg(short = 's', long = "shell", default_value = "sh")]
+        shell: Option<String>,
+    },
     #[command(alias = "add")]
     Set {
         #[arg(short = 'e', long = "environment")]
@@ -189,6 +198,7 @@ pub mod interactions {
     use super::db::establish_connection;
     use super::db::models::Project;
     use crate::Environment;
+    use crate::db::schema::secrets::config;
     use diesel::dsl::{insert_into, update};
     use diesel::result::{DatabaseErrorKind, Error as DieselError};
     use diesel::{ExpressionMethods, OptionalExtension, QueryDsl, RunQueryDsl, SelectableHelper};
@@ -325,6 +335,22 @@ pub mod interactions {
         }
 
         Ok(())
+    }
+
+    pub fn get_project_secrets(
+        proj_id: &str,
+        environment: Environment,
+    ) -> Result<Vec<(String, Vec<u8>, Vec<u8>)>> {
+        use super::db::schema::secrets::dsl::{config, name, nonce, project_id, secret, secrets};
+        let mut conn = establish_connection();
+
+        let results = secrets
+            .filter(project_id.eq(proj_id))
+            .filter(config.eq(environment))
+            .select((name, secret, nonce))
+            .load::<(String, Vec<u8>, Vec<u8>)>(&mut conn)?;
+
+        Ok(results)
     }
 
     pub fn delete_secret(secret_name: &str) -> Result<()> {

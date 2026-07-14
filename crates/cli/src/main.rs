@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::process;
 
 use clap::Parser;
@@ -9,6 +10,7 @@ use cli::gen_or_get_key;
 use cli::get_input;
 use cli::interactions::delete_secret;
 use cli::interactions::get_project_id;
+use cli::interactions::get_project_secrets;
 use cli::interactions::get_projects;
 use cli::interactions::set_secret;
 use colored::*;
@@ -147,18 +149,126 @@ fn main() {
                     };
                 }
             }
-            Commands::Inject { after } => {
-                let _config = require_config(&root);
+            Commands::Inject { environment, after } => {
+                let config = require_config(&root);
+                let environment: Environment = match environment {
+                    Some(env) => match env.parse::<Environment>() {
+                        Ok(parsed) => parsed,
+                        Err(_) => {
+                            eprintln!("Invalid environment '{}'.", env);
+                            process::exit(1);
+                        }
+                    },
+                    None => config.default_env.into(),
+                };
+                let proj_id = match get_project_id(&config.name) {
+                    Ok(p) => p,
+                    Err(e) => {
+                        eprintln!("Unable to get project ID for '{}': {}", config.name, e);
+                        process::exit(1);
+                    }
+                };
 
                 // for harbor inject -- bun dev
                 // after = ["bun", "dev"]
 
+                let mut cmd = process::Command::new(&after[0]);
 
+                if after.len() > 1 {
+                    cmd.args(&after[1..]);
+                }
+
+                let secrets = match get_project_secrets(&proj_id, environment) {
+                    Ok(s) => s,
+                    Err(e) => {
+                        eprintln!("Error getting secrets: {}", e);
+                        process::exit(1);
+                    }
+                };
+
+                let mut uncrypted_envs: HashMap<String, String> = HashMap::new();
+
+                for (name, ciphertext, nonce) in secrets {
+                    let key = match gen_or_get_key() {
+                        Ok(k) => k,
+                        Err(_) => {
+                            eprintln!("Error generating or getting key");
+                            process::exit(1);
+                        }
+                    };
+                    let nonce = crypto::Nonce::from_slice(&nonce);
+                    let decrypted = match crypto::decrypt(&key, ciphertext, nonce) {
+                        Ok(d) => d,
+                        Err(e) => {
+                            eprintln!("Error decrypting secret for key '{}': {}", name, e);
+                            process::exit(1);
+                        }
+                    };
+
+                    let decrypted_str = match String::from_utf8(decrypted) {
+                        Ok(s) => s,
+                        Err(e) => {
+                            eprintln!(
+                                "Error converting decrypted secret to string for key '{}': {}",
+                                name, e
+                            );
+                            process::exit(1);
+                        }
+                    };
+
+                    uncrypted_envs.insert(name, decrypted_str);
+                }
+
+                for (key, value) in uncrypted_envs {
+                    cmd.env(key, value);
+                }
+
+                if cmd.spawn().is_err() {
+                    eprintln!("Error executing command: {:?}", after);
+                    process::exit(1);
+                }
+
+                if cmd.status().is_err() {
+                    eprintln!("Error waiting for command to finish: {:?}", after);
+                    process::exit(1);
+                } else {
+                    process::exit(0);
+                }
             }
             Commands::List {} => {
-                let _config = require_config(&root);
+                // Get all secrets, then use colorize and split them between environments, and print them out in a table format.
+                let config = require_config(&root);
+                let proj_id = match get_project_id(&config.name) {
+                    Ok(p) => p,
+                    Err(e) => {
+                        eprintln!("Unable to get project ID for '{}': {}", config.name, e);
+                        process::exit(1);
+                    }
+                };
 
-                println!("List command executed");
+                let secrets = match get_project_secrets(&proj_id, Environment::Dev) {
+                    Ok(s) => s,
+                    Err(e) => {
+                        eprintln!("Error getting secrets: {}", e);
+                        process::exit(1);
+                    }
+                };
+
+                if secrets.is_empty() {
+                    println!("No secrets found for project '{}'.", config.name);
+                    process::exit(0);
+                }
+
+                println!(
+                    "{}",
+                    format!("Secrets for project '{}':", config.name)
+                        .bright_cyan()
+                        .bold()
+                );
+
+                for (name, _, _) in secrets {
+                    println!(" - {}", name.blue().bold());
+                }
             }
             Commands::Project { command } => match command {
                 ProjectCommands::List {} => {
@@ -237,8 +347,92 @@ fn main() {
                     }
                 }
             },
-            Commands::Shell {} => {
-                println!("Shell command executed");
+            Commands::Shell { environment, shell } => {
+                let config = require_config(&root);
+                let environment: Environment = match environment {
+                    Some(env) => match env.parse::<Environment>() {
+                        Ok(parsed) => parsed,
+                        Err(_) => {
+                            eprintln!("Invalid environment '{}'.", env);
+                            process::exit(1);
+                        }
+                    },
+                    None => config.default_env.into(),
+                };
+                let proj_id = match get_project_id(&config.name) {
+                    Ok(p) => p,
+                    Err(e) => {
+                        eprintln!("Unable to get project ID for '{}': {}", config.name, e);
+                        process::exit(1);
+                    }
+                };
+
+                // for harbor inject -- bun dev
+                // after = ["bun", "dev"]
+
+                let shell = shell
+                    .or_else(|| std::env::var("SHELL").ok())
+                    .or_else(|| Some("sh".into()))
+                    .unwrap();
+
+                let mut cmd = process::Command::new(&shell);
+
+                let secrets = match get_project_secrets(&proj_id, environment) {
+                    Ok(s) => s,
+                    Err(e) => {
+                        eprintln!("Error getting secrets: {}", e);
+                        process::exit(1);
+                    }
+                };
+
+                let mut uncrypted_envs: HashMap<String, String> = HashMap::new();
+
+                for (name, ciphertext, nonce) in secrets {
+                    let key = match gen_or_get_key() {
+                        Ok(k) => k,
+                        Err(_) => {
+                            eprintln!("Error generating or getting key");
+                            process::exit(1);
+                        }
+                    };
+                    let nonce = crypto::Nonce::from_slice(&nonce);
+                    let decrypted = match crypto::decrypt(&key, ciphertext, nonce) {
+                        Ok(d) => d,
+                        Err(e) => {
+                            eprintln!("Error decrypting secret for key '{}': {}", name, e);
+                            process::exit(1);
+                        }
+                    };
+
+                    let decrypted_str = match String::from_utf8(decrypted) {
+                        Ok(s) => s,
+                        Err(e) => {
+                            eprintln!(
+                                "Error converting decrypted secret to string for key '{}': {}",
+                                name, e
+                            );
+                            process::exit(1);
+                        }
+                    };
+
+                    uncrypted_envs.insert(name, decrypted_str);
+                }
+
+                for (key, value) in uncrypted_envs {
+                    cmd.env(key, value);
+                }
+
+                if cmd.spawn().is_err() {
+                    eprintln!("Error executing command: {:?}", &shell);
+                    process::exit(1);
+                }
+
+                if cmd.status().is_err() {
+                    eprintln!("Error waiting for command to finish: {:?}", &shell);
+                    process::exit(1);
+                } else {
+                    process::exit(0);
+                }
             }
             Commands::Setup {} => {
                 use std::process;
