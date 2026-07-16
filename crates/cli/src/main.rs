@@ -6,14 +6,11 @@ use clap::crate_version;
 use cli::Cli;
 use cli::Environment;
 use cli::config::{Config, ConfigError};
+use cli::expand_tilde;
 use cli::gen_or_get_key;
 use cli::get_input;
-use cli::interactions::delete_secret;
-use cli::interactions::get_project_id;
-use cli::interactions::get_project_secrets;
-use cli::interactions::get_projects;
-use cli::interactions::secret_exists;
-use cli::interactions::set_secret;
+use cli::store::Store;
+use cli::store::sqlite::SqliteStore;
 use colored::*;
 use crypto::encrypt;
 
@@ -47,8 +44,10 @@ fn main() {
         }
     };
 
+    let db_path = expand_tilde("~/.local/share/harbor/database.db");
     let config_path = root.join(".harbor.toml");
     let has_config = config_path.exists();
+    let store = SqliteStore::new(db_path);
 
     match cli.command {
         Some(c) => match c {
@@ -69,7 +68,7 @@ fn main() {
                     None => config.default_env.into(),
                 };
 
-                let project = match get_project_id(&config.name) {
+                let project = match store.get_project_id(&config.name) {
                     Ok(p) => p,
                     Err(e) => {
                         print_error(format!(
@@ -80,7 +79,7 @@ fn main() {
                     }
                 };
 
-                let secrets = match get_project_secrets(&project, environment) {
+                let secrets = match store.get_project_secrets(&project, environment) {
                     Ok(s) => s,
                     Err(e) => {
                         print_error(format!("Error getting secrets: {}", e));
@@ -156,7 +155,7 @@ fn main() {
                     process::exit(1);
                 }
 
-                let project = match get_project_id(&config.name) {
+                let project = match store.get_project_id(&config.name) {
                     Ok(p) => p,
                     Err(e) => {
                         print_error(format!(
@@ -168,7 +167,7 @@ fn main() {
                 };
 
                 for pair in pairs {
-                    let existed = match secret_exists(&project, &pair.0, environment) {
+                    let existed = match store.secret_exists(&project, &pair.0, environment) {
                         Ok(exists) => exists,
                         Err(e) => {
                             print_error(format!(
@@ -180,11 +179,8 @@ fn main() {
                     };
                     if existed {
                         let confirmation = match get_input(
-                            format!(
-                                "Secret '{}' already exists. Overwrite? (y/N)",
-                                pair.0
-                            )
-                            .yellow(),
+                            format!("Secret '{}' already exists. Overwrite? (y/N)", pair.0)
+                                .yellow(),
                             ':',
                             false,
                         ) {
@@ -198,12 +194,8 @@ fn main() {
                         if confirmation.to_lowercase() != "y" {
                             println!(
                                 "{}",
-                                format!(
-                                    "Skipped secret '{}' in {}.",
-                                    pair.0,
-                                    environment.as_str()
-                                )
-                                .dimmed()
+                                format!("Skipped secret '{}' in {}.", pair.0, environment.as_str())
+                                    .dimmed()
                             );
                             continue;
                         }
@@ -226,7 +218,7 @@ fn main() {
                             process::exit(1);
                         }
                     };
-                    match set_secret(&project, &pair.0, encrypted, environment, nonce) {
+                    match store.set_secret(&project, &pair.0, encrypted, environment, nonce) {
                         Ok(()) => {
                             let verb = if existed { "Updated" } else { "Set" };
                             println!(
@@ -263,7 +255,7 @@ fn main() {
                     },
                     None => config.default_env.into(),
                 };
-                let proj_id = match get_project_id(&config.name) {
+                let proj_id = match store.get_project_id(&config.name) {
                     Ok(p) => p,
                     Err(e) => {
                         print_error(format!(
@@ -291,7 +283,7 @@ fn main() {
                 }
 
                 for key in cleaned {
-                    match delete_secret(&proj_id, &key, environment) {
+                    match store.delete_secret(&proj_id, &key, environment) {
                         Ok(()) => {
                             println!("Deleted secret for key '{}'", key);
                         }
@@ -314,7 +306,7 @@ fn main() {
                     },
                     None => config.default_env.into(),
                 };
-                let proj_id = match get_project_id(&config.name) {
+                let proj_id = match store.get_project_id(&config.name) {
                     Ok(p) => p,
                     Err(e) => {
                         print_error(format!(
@@ -334,7 +326,7 @@ fn main() {
                     cmd.args(&after[1..]);
                 }
 
-                let secrets = match get_project_secrets(&proj_id, environment) {
+                let secrets = match store.get_project_secrets(&proj_id, environment) {
                     Ok(s) => s,
                     Err(e) => {
                         print_error(format!("Error getting secrets: {}", e));
@@ -392,7 +384,7 @@ fn main() {
             Commands::List {} => {
                 // Get all secrets, then use colorize and split them between environments, and print them out in a table format.
                 let config = require_config(&root);
-                let proj_id = match get_project_id(&config.name) {
+                let proj_id = match store.get_project_id(&config.name) {
                     Ok(p) => p,
                     Err(e) => {
                         print_error(format!(
@@ -403,7 +395,7 @@ fn main() {
                     }
                 };
 
-                let secrets = match get_project_secrets(&proj_id, Environment::Dev) {
+                let secrets = match store.get_project_secrets(&proj_id, Environment::Dev) {
                     Ok(s) => s,
                     Err(e) => {
                         print_error(format!("Error getting secrets: {}", e));
@@ -429,7 +421,7 @@ fn main() {
             }
             Commands::Project { command } => match command {
                 ProjectCommands::List {} => {
-                    let projects = match get_projects() {
+                    let projects = match store.get_projects() {
                         Ok(projects) => projects,
                         Err(e) => {
                             print_error(format!("Error getting projects: {}", e));
@@ -449,7 +441,7 @@ fn main() {
                         }
                     };
 
-                    match cli::interactions::create_project(&project_name) {
+                    match store.create_project(&project_name) {
                         Ok(()) => {
                             println!("{}", "Project created successfully.".bright_green().bold())
                         }
@@ -461,7 +453,7 @@ fn main() {
                 }
                 ProjectCommands::Delete { name } => {
                     // We'll check if the project exists before prompting for confirmation
-                    let exists = match cli::interactions::project_exists(&name) {
+                    let exists = match store.project_exists(&name) {
                         Ok(exists) => exists,
                         Err(e) => {
                             print_error(format!("Error checking if project exists: {}", e));
@@ -492,7 +484,7 @@ fn main() {
                     };
 
                     if confirmation.to_lowercase() == "y" {
-                        match cli::interactions::delete_project(&name) {
+                        match store.delete_project(&name) {
                             Ok(()) => {
                                 println!(
                                     "{}",
@@ -525,7 +517,7 @@ fn main() {
                     },
                     None => config.default_env.into(),
                 };
-                let proj_id = match get_project_id(&config.name) {
+                let proj_id = match store.get_project_id(&config.name) {
                     Ok(p) => p,
                     Err(e) => {
                         print_error(format!(
@@ -551,7 +543,7 @@ fn main() {
                     cmd.arg(command);
                 }
 
-                let secrets = match get_project_secrets(&proj_id, environment) {
+                let secrets = match store.get_project_secrets(&proj_id, environment) {
                     Ok(s) => s,
                     Err(e) => {
                         print_error(format!("Error getting secrets: {}", e));
@@ -618,7 +610,7 @@ fn main() {
                 use std::process;
                 // Setup will get all projects and prompt the user to select one,
                 // then create a .harbor.toml file in the current directory with the selected project name.
-                let projects = match get_projects() {
+                let projects = match store.get_projects() {
                     Ok(projects) => projects,
                     Err(e) => {
                         print_error(format!("Error getting projects: {}", e));

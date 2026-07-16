@@ -1,10 +1,8 @@
 use cli::Environment;
 use cli::config::Config;
-use cli::interactions::{
-    create_project, delete_project, delete_secret, get_project_id, get_project_secrets,
-    get_projects, project_exists, secret_exists, set_secret,
-};
-use cli::{format_doppler_set_command, parse_secret_pairs};
+use cli::parse_secret_pairs;
+use cli::store::Store;
+use cli::store::sqlite::SqliteStore;
 use diesel::connection::SimpleConnection;
 use diesel::{Connection, SqliteConnection};
 use std::path::PathBuf;
@@ -92,22 +90,6 @@ fn parse_secret_pairs_handles_valid_and_invalid_input() {
 }
 
 #[test]
-fn format_doppler_set_command_outputs_expected_format() {
-    let empty = format_doppler_set_command(&[]);
-    assert_eq!(empty, "doppler secrets set");
-
-    let one = format_doppler_set_command(&[("API_KEY".to_string(), "abc".to_string())]);
-    assert_eq!(one, "doppler secrets set \\\n  API_KEY=\"abc\"");
-
-    let many = format_doppler_set_command(&[
-        ("A".to_string(), "1".to_string()),
-        ("B".to_string(), "2".to_string()),
-    ]);
-
-    assert_eq!(many, "doppler secrets set \\\n  A=\"1\" \\\n  B=\"2\"");
-}
-
-#[test]
 fn config_reads_valid_file_and_reports_errors() {
     let temp_root = std::env::temp_dir().join(format!("harbor_config_{}", Uuid::new_v4()));
     std::fs::create_dir_all(&temp_root).expect("create temp dir");
@@ -140,55 +122,76 @@ fn config_reads_valid_file_and_reports_errors() {
 fn project_and_secret_lifecycle() {
     let _guard = test_lock().lock().expect("lock tests");
     let db_path = setup_test_db();
+    let store = SqliteStore::new(String::new());
 
-    assert!(!project_exists("alpha").expect("project exists"));
+    assert!(!store.project_exists("alpha").expect("project exists"));
 
-    create_project("alpha").expect("create project");
-    assert!(project_exists("alpha").expect("project exists"));
+    store.create_project("alpha").expect("create project");
+    assert!(store.project_exists("alpha").expect("project exists"));
 
-    let project_id = get_project_id("alpha").expect("get project id");
-    let projects = get_projects().expect("get projects");
+    let project_id = store.get_project_id("alpha").expect("get project id");
+    let projects = store.get_projects().expect("get projects");
     assert_eq!(projects.len(), 1);
     assert_eq!(projects[0].name, "alpha");
 
-    assert!(!secret_exists(&project_id, "API_KEY", Environment::Dev).expect("secret exists"));
+    assert!(
+        !store
+            .secret_exists(&project_id, "API_KEY", Environment::Dev)
+            .expect("secret exists")
+    );
 
     let nonce = crypto::helper::gen_nonce();
-    set_secret(
-        &project_id,
-        "API_KEY",
-        b"first".to_vec(),
-        Environment::Dev,
-        nonce,
-    )
-    .expect("set secret");
+    store
+        .set_secret(
+            &project_id,
+            "API_KEY",
+            b"first".to_vec(),
+            Environment::Dev,
+            nonce,
+        )
+        .expect("set secret");
 
-    assert!(secret_exists(&project_id, "API_KEY", Environment::Dev).expect("secret exists"));
+    assert!(
+        store
+            .secret_exists(&project_id, "API_KEY", Environment::Dev)
+            .expect("secret exists")
+    );
 
-    let secrets = get_project_secrets(&project_id, Environment::Dev).expect("get secrets");
+    let secrets = store
+        .get_project_secrets(&project_id, Environment::Dev)
+        .expect("get secrets");
     assert_eq!(secrets.len(), 1);
     assert_eq!(secrets[0].0, "API_KEY");
     assert_eq!(secrets[0].1, b"first".to_vec());
 
     let nonce = crypto::helper::gen_nonce();
-    set_secret(
-        &project_id,
-        "API_KEY",
-        b"second".to_vec(),
-        Environment::Dev,
-        nonce,
-    )
-    .expect("update secret");
+    store
+        .set_secret(
+            &project_id,
+            "API_KEY",
+            b"second".to_vec(),
+            Environment::Dev,
+            nonce,
+        )
+        .expect("update secret");
 
-    let updated = get_project_secrets(&project_id, Environment::Dev).expect("get secrets");
+    let updated = store
+        .get_project_secrets(&project_id, Environment::Dev)
+        .expect("get secrets");
     assert_eq!(updated.len(), 1);
     assert_eq!(updated[0].1, b"second".to_vec());
 
-    delete_secret(&project_id, "API_KEY", Environment::Dev).expect("delete secret");
-    assert!(!secret_exists(&project_id, "API_KEY", Environment::Dev).expect("secret exists"));
+    store
+        .delete_secret(&project_id, "API_KEY", Environment::Dev)
+        .expect("delete secret");
+    assert!(
+        !store
+            .secret_exists(&project_id, "API_KEY", Environment::Dev)
+            .expect("secret exists")
+    );
 
-    delete_project("alpha").expect("delete project");
-    assert!(!project_exists("alpha").expect("project exists"));
+    store.delete_project("alpha").expect("delete project");
+    assert!(!store.project_exists("alpha").expect("project exists"));
 
     cleanup_test_db(db_path);
 }
@@ -197,15 +200,18 @@ fn project_and_secret_lifecycle() {
 fn errors_for_missing_project_or_secret() {
     let _guard = test_lock().lock().expect("lock tests");
     let db_path = setup_test_db();
+    let store = SqliteStore::new(String::new());
 
-    let err = delete_project("missing").unwrap_err();
+    let err = store.delete_project("missing").unwrap_err();
     assert_eq!(err.to_string(), "Project does not exist");
 
-    let err = get_project_id("missing").unwrap_err();
+    let err = store.get_project_id("missing").unwrap_err();
     assert_eq!(err.to_string(), "Project not found");
 
     let missing_project_id = Uuid::new_v4().to_string();
-    let err = delete_secret(&missing_project_id, "missing", Environment::Dev).unwrap_err();
+    let err = store
+        .delete_secret(&missing_project_id, "missing", Environment::Dev)
+        .unwrap_err();
     assert_eq!(err.to_string(), "Secret does not exist");
 
     cleanup_test_db(db_path);
