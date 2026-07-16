@@ -3,7 +3,7 @@ name = "cli"
 version = "1.0.0"
 edition = "2024"
 authors = ["idle_river <khokharmaaz@gmail.com>"]
-description = "An opensource secrets management and distribution platform"
+description = "An open source secrets management and distribution platform"
 license = "GLP-3.0"
 
 [dependencies]
