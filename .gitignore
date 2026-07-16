@@ -19,3 +19,5 @@ harbor.db
 # Environment Variables
 .env*
 !.env.example
+
+config/
