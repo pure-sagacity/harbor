@@ -1,5 +1,13 @@
+use std::path::PathBuf;
+
 use axum::{Router, routing::get};
 use tokio::net::TcpListener;
+
+fn data_dir() -> PathBuf {
+    std::env::var("HARBOR_DATA_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| PathBuf::from("/var/lib/harbor"))
+}
 
 #[tokio::main]
 async fn main() {
