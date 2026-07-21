@@ -1,6 +1,6 @@
 import { useEffect } from "react";
 import "./index.css";
-import harborGlyph from "../../assets/icon-nobg.png";
+import harborGlyph from "../assets//icon-nobg.png";
 
 const readinessChecklist = [
   "Enable flakes in nix.conf (experimental-features = nix-command flakes)",
