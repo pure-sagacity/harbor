@@ -1,14 +1,14 @@
-@import url("https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap");
+@import url("https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=Sora:wght@500;600;700&display=swap");
 @import "../styles/globals.css";
 
 :root {
-  --font-body: "Inter", "Source Sans 3", sans-serif;
-  --font-display: "Inter", "Source Sans 3", sans-serif;
-  --harbor-ink: oklch(0.18 0.03 230);
-  --harbor-sea: oklch(0.46 0.12 215);
-  --harbor-sea-deep: oklch(0.34 0.1 230);
-  --harbor-sand: oklch(0.97 0.02 90);
-  --harbor-coral: oklch(0.75 0.12 45);
+  --font-body: "Space Grotesk", "Sora", sans-serif;
+  --font-display: "Sora", "Space Grotesk", sans-serif;
+  --harbor-ink: #0e1c2a;
+  --harbor-sea: #6bc4ff;
+  --harbor-sea-deep: #1f4f7c;
+  --harbor-sand: #f1f7ff;
+  --harbor-coral: #94d9ff;
 }
 
 @layer base {
@@ -20,19 +20,38 @@
     @apply m-0 min-h-screen bg-background text-foreground antialiased;
     font-family: var(--font-body);
     letter-spacing: 0.01em;
+    background-color: var(--background);
+    background-image:
+      radial-gradient(
+        1200px circle at 12% -20%,
+        rgba(107, 196, 255, 0.22),
+        transparent 55%
+      ),
+      radial-gradient(
+        900px circle at 88% 0%,
+        rgba(24, 64, 110, 0.35),
+        transparent 58%
+      ),
+      radial-gradient(
+        750px circle at 50% 100%,
+        rgba(57, 119, 180, 0.28),
+        transparent 70%
+      );
   }
 }
 
 .font-display {
   font-family: var(--font-display);
   font-weight: 600;
-  letter-spacing: -0.02em;
+  letter-spacing: -0.03em;
 }
 
 .reveal {
   opacity: 0;
   transform: translateY(16px);
-  transition: opacity 0.7s ease, transform 0.7s ease;
+  transition:
+    opacity 0.7s ease,
+    transform 0.7s ease;
 }
 
 .reveal.is-visible {
