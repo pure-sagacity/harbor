@@ -1,4 +1,4 @@
-FROM oven/bun:1.3.14-debian as builder
+FROM oven/bun:1.3.13-debian as builder
 
 # Set the working directory inside the container
 WORKDIR /app
