@@ -21,3 +21,7 @@ harbor.db
 !.env.example
 
 config/
+
+# File system stuff
+*/.DS_Store
+.DS_Store

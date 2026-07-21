@@ -58,6 +58,7 @@
   profiles.website.module = {
     languages.javascript = {
       enable = true;
+      directory = "./website";
       bun = {
         enable = true;
         install.enable = true;
